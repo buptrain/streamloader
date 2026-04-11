@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>StreamLoader</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>StreamLoader</h1>
+      <div class="actions">
+        <button id="refresh" title="Refresh list">Refresh</button>
+        <button id="clear" title="Clear this tab's list">Clear</button>
+      </div>
+    </header>
+
+    <div id="status" class="status"></div>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <ul id="list" class="stream-list"></ul>
+
+    <template id="item-template">
+      <li class="stream-item">
+        <div class="row">
+          <span class="index"></span>
+          <span class="filename"></span>
+          <span class="size"></span>
+        </div>
+        <div class="row actions">
+          <button class="copy">Copy URL</button>
+          <button class="open">Open</button>
+          <button class="download">Download</button>
+        </div>
+      </li>
+    </template>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
