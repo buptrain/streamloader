@@ -14,6 +14,43 @@ let currentTabId = null;
 const pendingDownloads = new Map(); // downloadId -> { url, filename }
 let toastTimer = null;
 
+// Thumbnail generation state.
+// - thumbCache: in-panel cache so re-renders within the same tab session
+//   don't re-decode video (background also caches across sidepanel reloads).
+// - thumbFailed: URLs whose thumbnail generation has already failed once;
+//   skipped on subsequent renders until the user hits Refresh.
+// - thumbQueue: sequential queue. We deliberately serialize to cap peak
+//   memory at one decoded frame buffer (~8MB) regardless of stream count.
+const thumbCache = new Map(); // url -> dataUrl
+const resolutionCache = new Map(); // url -> { width, height }
+const thumbFailed = new Set(); // url
+const thumbQueue = [];
+let thumbWorking = false;
+const THUMB_W = 160;
+const THUMB_H = 90;
+const THUMB_TIMEOUT_MS = 8000;
+
+// Pin a small set of common heights to the labels people recognize.
+// Anything outside the tolerance falls back to raw WIDTHxHEIGHT.
+const RESOLUTION_TIERS = [
+  { h: 4320, label: "8K" },
+  { h: 2160, label: "4K" },
+  { h: 1440, label: "1440p" },
+  { h: 1080, label: "1080p" },
+  { h: 720, label: "720p" },
+  { h: 480, label: "480p" },
+  { h: 360, label: "360p" },
+  { h: 240, label: "240p" },
+];
+
+function formatResolution(width, height) {
+  if (!width || !height) return "";
+  for (const t of RESOLUTION_TIERS) {
+    if (Math.abs(height - t.h) <= 30) return t.label;
+  }
+  return `${width}×${height}`;
+}
+
 function formatSize(bytes) {
   if (!bytes && bytes !== 0) return "";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -97,7 +134,23 @@ function render(streams) {
     const node = tpl.content.firstElementChild.cloneNode(true);
     node.querySelector(".index").textContent = `${idx + 1}.`;
     node.querySelector(".filename").textContent = filenameFromUrl(s.url);
-    node.querySelector(".size").textContent = s.size ? formatSize(s.size) : "";
+
+    const thumbWrap = node.querySelector(".thumb");
+    const thumbImg = node.querySelector(".thumb-img");
+    const resEl = node.querySelector(".resolution");
+
+    const cachedRes =
+      (s.width && s.height ? { width: s.width, height: s.height } : null) ||
+      resolutionCache.get(s.url);
+    if (cachedRes) applyResolution(resEl, cachedRes.width, cachedRes.height);
+
+    const cached = s.thumb || thumbCache.get(s.url);
+    if (cached) {
+      applyThumb(thumbWrap, thumbImg, cached);
+    } else if (!thumbFailed.has(s.url)) {
+      thumbWrap.classList.add("loading");
+      enqueueThumb(s.url, thumbWrap, thumbImg, resEl);
+    }
 
     node.querySelector(".copy").addEventListener("click", async () => {
       try {
@@ -124,6 +177,169 @@ function render(streams) {
 
     listEl.appendChild(node);
   });
+}
+
+function applyThumb(wrap, img, dataUrl) {
+  img.src = dataUrl;
+  img.hidden = false;
+  wrap.classList.remove("loading");
+}
+
+function applyResolution(el, width, height) {
+  const label = formatResolution(width, height);
+  if (!label) return;
+  el.textContent = label;
+  el.title = `${width}×${height}`;
+  el.hidden = false;
+}
+
+function enqueueThumb(url, wrap, img, resEl) {
+  thumbQueue.push({ url, wrap, img, resEl });
+  if (!thumbWorking) processThumbQueue();
+}
+
+async function processThumbQueue() {
+  if (thumbWorking) return;
+  thumbWorking = true;
+  try {
+    while (thumbQueue.length) {
+      const job = thumbQueue.shift();
+      // The DOM nodes may have been re-rendered out from under us (tab
+      // switch, refresh). The cache check below still benefits later
+      // renders, so we run the job either way.
+      //
+      // onMeta fires as soon as videoWidth/Height are known — that's
+      // before the seek/draw completes, so resolution badges paint a
+      // beat ahead of thumbnails.
+      const onMeta = (width, height) => {
+        if (!width || !height) return;
+        resolutionCache.set(job.url, { width, height });
+        if (job.resEl?.isConnected) applyResolution(job.resEl, width, height);
+        if (currentTabId != null) {
+          sendMessageAsync({
+            type: "SL_SET_STREAM_META",
+            tabId: currentTabId,
+            url: job.url,
+            width,
+            height,
+          });
+        }
+      };
+
+      const result = await generateThumb(job.url, onMeta).catch(() => null);
+      if (result?.thumb) {
+        thumbCache.set(job.url, result.thumb);
+        if (currentTabId != null) {
+          sendMessageAsync({
+            type: "SL_SET_STREAM_META",
+            tabId: currentTabId,
+            url: job.url,
+            thumb: result.thumb,
+            width: result.width,
+            height: result.height,
+          });
+        }
+        if (job.img.isConnected) applyThumb(job.wrap, job.img, result.thumb);
+      } else {
+        thumbFailed.add(job.url);
+        if (job.wrap.isConnected) job.wrap.classList.remove("loading");
+      }
+    }
+  } finally {
+    thumbWorking = false;
+  }
+}
+
+async function generateThumb(url, onMeta) {
+  // Best-effort Referer override: many CDNs gate access on Referer, and we
+  // also need the matching CORS response headers (set by the same DNR rule)
+  // so crossOrigin="anonymous" produces a non-tainted canvas.
+  const ctx = await installThumbRefererOverride(url);
+  let video = null;
+  let timer = null;
+  let metaWidth = 0;
+  let metaHeight = 0;
+  try {
+    return await new Promise((resolve, reject) => {
+      video = document.createElement("video");
+      video.crossOrigin = "anonymous";
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      video.src = url;
+
+      timer = setTimeout(() => reject(new Error("timeout")), THUMB_TIMEOUT_MS);
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
+
+      video.addEventListener("error", () => {
+        cleanup();
+        reject(new Error("video error"));
+      });
+
+      video.addEventListener("loadedmetadata", () => {
+        metaWidth = video.videoWidth || 0;
+        metaHeight = video.videoHeight || 0;
+        if (onMeta) {
+          try { onMeta(metaWidth, metaHeight); } catch (e) { /* ignore */ }
+        }
+        const seekTo = Math.min(1, Math.max(0, (video.duration || 0) * 0.1));
+        try {
+          video.currentTime = seekTo;
+        } catch (e) {
+          cleanup();
+          reject(e);
+        }
+      });
+
+      video.addEventListener("seeked", () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = THUMB_W;
+          canvas.height = THUMB_H;
+          const cctx = canvas.getContext("2d");
+          cctx.drawImage(video, 0, 0, THUMB_W, THUMB_H);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+          cleanup();
+          resolve({ thumb: dataUrl, width: metaWidth, height: metaHeight });
+        } catch (e) {
+          // Most likely SecurityError from a tainted canvas.
+          cleanup();
+          reject(e);
+        }
+      });
+    });
+  } finally {
+    if (video) {
+      video.removeAttribute("src");
+      try { video.load(); } catch (e) { /* ignore */ }
+    }
+    if (ctx) await sendMessageAsync({ type: "SL_CLEAR_THUMB_REFERER" });
+  }
+}
+
+async function installThumbRefererOverride(url) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabUrl = tab?.url || "";
+  if (!tabUrl) return null;
+  let pageOrigin;
+  try {
+    pageOrigin = new URL(tabUrl).origin;
+  } catch (e) {
+    return null;
+  }
+  await sendMessageAsync({
+    type: "SL_SET_THUMB_REFERER",
+    url,
+    referer: pageOrigin + "/",
+    pageOrigin,
+  });
+  return { origin: pageOrigin };
 }
 
 function flashButton(btn, text) {
@@ -369,9 +585,16 @@ async function syncToActiveTab() {
   loadStreams();
 }
 
-refreshBtn.addEventListener("click", loadStreams);
+refreshBtn.addEventListener("click", () => {
+  // Let previously failed thumbnails be retried on a manual refresh.
+  thumbFailed.clear();
+  loadStreams();
+});
 clearBtn.addEventListener("click", () => {
   if (currentTabId == null) return;
+  thumbCache.clear();
+  resolutionCache.clear();
+  thumbFailed.clear();
   chrome.runtime.sendMessage({ type: "SL_CLEAR", tabId: currentTabId }, () => loadStreams());
 });
 

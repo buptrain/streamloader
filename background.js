@@ -25,6 +25,10 @@ if (chrome.declarativeNetRequest?.updateDynamicRules) {
 // URL as its Referer (and the tab origin as Origin). Rule id 2001 is reused
 // on every click so only the most recent override is live.
 const SESSION_OVERRIDE_RULE_ID = 2001;
+// Separate rule id used while generating side-panel thumbnails. Kept apart
+// from the per-click download rule (2001) so a Download click during thumb
+// generation doesn't stomp on either override.
+const SESSION_THUMB_RULE_ID = 2002;
 
 async function setDownloadRefererOverride(targetUrl, referer, pageOrigin) {
   if (!chrome.declarativeNetRequest?.updateSessionRules) return;
@@ -99,6 +103,74 @@ async function clearDownloadRefererOverride() {
   }
 }
 
+// Same shape as the download override but on a separate rule id so the two
+// don't clobber each other. Also injects CORS response headers so the side
+// panel's <video crossOrigin="anonymous"> can paint frames into a non-tainted
+// canvas.
+async function setThumbRefererOverride(targetUrl, referer, pageOrigin) {
+  if (!chrome.declarativeNetRequest?.updateSessionRules) return;
+  if (!targetUrl || !referer) return;
+
+  let filter = targetUrl;
+  try {
+    const u = new URL(targetUrl);
+    filter = `|${u.origin}${u.pathname}`;
+  } catch (e) {
+    /* fall back to full URL */
+  }
+
+  const requestHeaders = [
+    { header: "referer", operation: "set", value: referer },
+  ];
+  const responseHeaders = [];
+  if (pageOrigin) {
+    responseHeaders.push(
+      { header: "access-control-allow-origin", operation: "set", value: pageOrigin },
+      { header: "access-control-allow-credentials", operation: "set", value: "true" },
+      { header: "access-control-expose-headers", operation: "set", value: "content-length,content-type,content-range,accept-ranges" }
+    );
+  }
+
+  const action = { type: "modifyHeaders", requestHeaders };
+  if (responseHeaders.length) action.responseHeaders = responseHeaders;
+
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [SESSION_THUMB_RULE_ID],
+      addRules: [
+        {
+          id: SESSION_THUMB_RULE_ID,
+          priority: 100,
+          action,
+          condition: {
+            urlFilter: filter,
+            resourceTypes: [
+              "xmlhttprequest",
+              "media",
+              "main_frame",
+              "sub_frame",
+              "other",
+            ],
+          },
+        },
+      ],
+    });
+  } catch (err) {
+    console.warn("StreamLoader: failed to set thumb override", err);
+  }
+}
+
+async function clearThumbRefererOverride() {
+  if (!chrome.declarativeNetRequest?.updateSessionRules) return;
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [SESSION_THUMB_RULE_ID],
+    });
+  } catch (err) {
+    /* best-effort cleanup */
+  }
+}
+
 const MP4_URL_RE = /\.mp4(\?|#|$)/i;
 
 function isMp4Url(url) {
@@ -167,8 +239,22 @@ function addStream(tabId, info) {
     mime: info.mime || null,
     addedAt: Date.now(),
     sources: [info.source || "network"],
+    thumb: null, // data: URL, populated by side panel after generation
+    width: null, // captured during thumb generation (loadedmetadata)
+    height: null,
   });
   updateBadge(tabId);
+}
+
+function setStreamMeta(tabId, url, meta) {
+  const m = tabStreams.get(tabId);
+  if (!m) return false;
+  const entry = m.get(url);
+  if (!entry) return false;
+  if (meta.thumb !== undefined) entry.thumb = meta.thumb || null;
+  if (meta.width) entry.width = meta.width;
+  if (meta.height) entry.height = meta.height;
+  return true;
 }
 
 // Network-based detection
@@ -289,5 +375,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "SL_CLEAR_REFERER_OVERRIDE") {
     clearDownloadRefererOverride().then(() => sendResponse({ ok: true }));
     return true;
+  }
+
+  if (msg.type === "SL_SET_THUMB_REFERER") {
+    setThumbRefererOverride(msg.url, msg.referer, msg.pageOrigin).then(
+      () => sendResponse({ ok: true }),
+      (err) => sendResponse({ ok: false, error: String(err) })
+    );
+    return true;
+  }
+
+  if (msg.type === "SL_CLEAR_THUMB_REFERER") {
+    clearThumbRefererOverride().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "SL_SET_STREAM_THUMB") {
+    const ok = setStreamMeta(msg.tabId, msg.url, { thumb: msg.thumb });
+    sendResponse({ ok });
+    return;
+  }
+
+  if (msg.type === "SL_SET_STREAM_META") {
+    const ok = setStreamMeta(msg.tabId, msg.url, {
+      thumb: msg.thumb,
+      width: msg.width,
+      height: msg.height,
+    });
+    sendResponse({ ok });
+    return;
   }
 });

@@ -102,8 +102,55 @@ button:hover {
 }
 
 .stream-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.stream-item .thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 96px;
+  height: 54px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stream-item .thumb-placeholder {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stream-item .thumb.loading .thumb-placeholder {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.stream-item .thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.stream-item .meta {
+  flex: 1;
+  min-width: 0;
 }
 
 .stream-item .row {
@@ -126,13 +173,23 @@ button:hover {
   white-space: nowrap;
 }
 
-.stream-item .size {
+.stream-item .resolution {
+  flex: 0 0 auto;
   color: var(--muted);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--hover);
+}
+
+.stream-item .resolution[hidden] {
+  display: none;
 }
 
 .stream-item .row.actions {
   margin-top: 6px;
-  margin-left: 26px;
   gap: 6px;
+  flex-wrap: wrap;
 }

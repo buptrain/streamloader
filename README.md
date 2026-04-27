@@ -30,8 +30,9 @@ used. See `LICENSE`.
 - Detects MP4 URLs from network traffic (`chrome.webRequest`) and from
   `<video>` / `<source>` elements in the DOM (via a content script that also
   watches for late-loaded players).
-- Chrome side panel UI with a per-tab list of streams, each showing filename
-  and human-readable size.
+- Chrome side panel UI with a per-tab list of streams, each showing a
+  filename, a video thumbnail (first-frame snapshot), and a resolution badge
+  (`1080p`, `720p`, raw `1920×1080`, etc.).
 - **Copy URL**, **Open**, and **Download** actions for each stream.
 - Downloads are auto-named from the active tab's page title, sanitized for
   Windows-safe filenames (strips reserved characters, collapses whitespace,
@@ -47,6 +48,12 @@ used. See `LICENSE`.
 - Surfaces the exact `chrome.downloads.InterruptReason` in a toast when a
   download fails, so you know whether it was a filename issue, a network
   error, or a server rejection.
+- Thumbnails and resolutions are generated on-demand in the side panel by
+  loading the MP4 into a hidden `<video crossOrigin="anonymous">`, reading
+  `videoWidth` / `videoHeight` at `loadedmetadata`, then drawing the first
+  frame onto a canvas. A separate per-URL DNR session rule (id `2002`) injects
+  the matching `Referer` and CORS response headers so the canvas isn't
+  tainted. Generation is serialized (one decode at a time) to cap peak memory.
 
 ## Install (unpacked)
 
@@ -98,6 +105,10 @@ If you switch to another tab first, the override uses the wrong origin.
 - **Referer rewrite is per-click.** The DNR session rule is updated each time
   you click Download or Open; older in-flight requests to the same URL will
   not be rewritten retroactively.
+- **Thumbnails and resolution badges may be missing** for streams whose CDN
+  refuses cross-origin reads even with the injected CORS headers, or which
+  require cookies that the side-panel context doesn't have. The row falls back
+  to a generic play-icon placeholder; the URL is still copyable and downloadable.
 
 ## Project layout
 
@@ -126,9 +137,15 @@ streamloader/
   a per-download rule (id `2001`) that rewrites the `Referer` request header
   and injects `Access-Control-Allow-Origin` / `Access-Control-Allow-Credentials`
   response headers so a cross-origin page-context fetch can read the body.
+  A separate session rule (id `2002`) is used for thumbnail generation so
+  Download/Open clicks don't clobber an in-flight thumbnail probe.
 - Download fallback runs a `chrome.scripting.executeScript` call targeting
   the source tab, where the injected function does the `fetch` and triggers
   a blob-URL download.
+- Thumbnails are 160×90 JPEGs (q=0.7), ~5–15 KB each, cached on the stream
+  entry in the service worker and in the side panel. Resolution is read from
+  `videoWidth`/`videoHeight` at `loadedmetadata` and rendered before the
+  thumbnail finishes painting.
 
 ## Contributing
 

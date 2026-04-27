@@ -22,15 +22,25 @@
 
     <template id="item-template">
       <li class="stream-item">
-        <div class="row">
-          <span class="index"></span>
-          <span class="filename"></span>
-          <span class="size"></span>
+        <div class="thumb">
+          <div class="thumb-placeholder" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+          <img class="thumb-img" alt="" hidden />
         </div>
-        <div class="row actions">
-          <button class="copy">Copy URL</button>
-          <button class="open">Open</button>
-          <button class="download">Download</button>
+        <div class="meta">
+          <div class="row">
+            <span class="index"></span>
+            <span class="filename"></span>
+            <span class="resolution" hidden></span>
+          </div>
+          <div class="row actions">
+            <button class="copy">Copy URL</button>
+            <button class="open">Open</button>
+            <button class="download">Download</button>
+          </div>
         </div>
       </li>
     </template>
