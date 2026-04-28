@@ -29,6 +29,10 @@ const SESSION_OVERRIDE_RULE_ID = 2001;
 // from the per-click download rule (2001) so a Download click during thumb
 // generation doesn't stomp on either override.
 const SESSION_THUMB_RULE_ID = 2002;
+// Resolution probes run as their own queue in parallel with the thumb queue,
+// so a third rule id keeps their Referer/CORS override from clobbering the
+// thumb override (or vice-versa) when both queues are active at once.
+const SESSION_RES_RULE_ID = 2003;
 
 async function setDownloadRefererOverride(targetUrl, referer, pageOrigin) {
   if (!chrome.declarativeNetRequest?.updateSessionRules) return;
@@ -106,8 +110,9 @@ async function clearDownloadRefererOverride() {
 // Same shape as the download override but on a separate rule id so the two
 // don't clobber each other. Also injects CORS response headers so the side
 // panel's <video crossOrigin="anonymous"> can paint frames into a non-tainted
-// canvas.
-async function setThumbRefererOverride(targetUrl, referer, pageOrigin) {
+// canvas. Used by both the thumbnail queue (rule 2002) and the resolution
+// probe queue (rule 2003), which run independently.
+async function setSidePanelOverride(ruleId, targetUrl, referer, pageOrigin) {
   if (!chrome.declarativeNetRequest?.updateSessionRules) return;
   if (!targetUrl || !referer) return;
 
@@ -136,10 +141,10 @@ async function setThumbRefererOverride(targetUrl, referer, pageOrigin) {
 
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [SESSION_THUMB_RULE_ID],
+      removeRuleIds: [ruleId],
       addRules: [
         {
-          id: SESSION_THUMB_RULE_ID,
+          id: ruleId,
           priority: 100,
           action,
           condition: {
@@ -156,15 +161,15 @@ async function setThumbRefererOverride(targetUrl, referer, pageOrigin) {
       ],
     });
   } catch (err) {
-    console.warn("StreamLoader: failed to set thumb override", err);
+    console.warn("StreamLoader: failed to set side-panel override", ruleId, err);
   }
 }
 
-async function clearThumbRefererOverride() {
+async function clearSidePanelOverride(ruleId) {
   if (!chrome.declarativeNetRequest?.updateSessionRules) return;
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [SESSION_THUMB_RULE_ID],
+      removeRuleIds: [ruleId],
     });
   } catch (err) {
     /* best-effort cleanup */
@@ -378,7 +383,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "SL_SET_THUMB_REFERER") {
-    setThumbRefererOverride(msg.url, msg.referer, msg.pageOrigin).then(
+    setSidePanelOverride(SESSION_THUMB_RULE_ID, msg.url, msg.referer, msg.pageOrigin).then(
       () => sendResponse({ ok: true }),
       (err) => sendResponse({ ok: false, error: String(err) })
     );
@@ -386,7 +391,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "SL_CLEAR_THUMB_REFERER") {
-    clearThumbRefererOverride().then(() => sendResponse({ ok: true }));
+    clearSidePanelOverride(SESSION_THUMB_RULE_ID).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "SL_SET_RES_REFERER") {
+    setSidePanelOverride(SESSION_RES_RULE_ID, msg.url, msg.referer, msg.pageOrigin).then(
+      () => sendResponse({ ok: true }),
+      (err) => sendResponse({ ok: false, error: String(err) })
+    );
+    return true;
+  }
+
+  if (msg.type === "SL_CLEAR_RES_REFERER") {
+    clearSidePanelOverride(SESSION_RES_RULE_ID).then(() => sendResponse({ ok: true }));
     return true;
   }
 

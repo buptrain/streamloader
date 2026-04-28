@@ -75,6 +75,16 @@ button:hover {
   border-color: var(--accent);
 }
 
+button.toggle.on {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+button.toggle.on:hover {
+  filter: brightness(1.05);
+}
+
 .status {
   padding: 10px 12px;
   color: var(--muted);
@@ -121,6 +131,10 @@ button:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+body.thumbs-off .stream-item .thumb {
+  display: none;
 }
 
 .stream-item .thumb-placeholder {
