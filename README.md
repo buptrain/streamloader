@@ -1,158 +1,110 @@
 # StreamLoader
 
-A Chrome (Manifest V3) extension that lists MP4 streams playing on the current
-webpage and lets you save them with a filename based on the page title. Built
-for students who want a local copy of their own course recordings for offline
-study.
+**A focused local-study tool for saving authorized MP4 recordings.**
 
-## Intended use
+StreamLoader is a Chrome side-panel extension that discovers plain MP4 streams playing in the current tab, gives each one a useful page-title filename, and lets the viewer copy, open, or download it. It is built for people who are permitted to retain their own course recordings, event replays, or other media for offline use.
 
-**StreamLoader is only for saving content you are personally authorized to
-access and keep a copy of** — e.g. your own course recordings from a learning
-management system, Zoom class replays you are enrolled in, conference talks
-shared with you, etc.
+Use it only for content you are authorized to access and keep. StreamLoader does not bypass DRM, paywalls, or access controls.
 
-Do not use this extension to:
+---
 
-- Redistribute, re-upload, or publicly share recordings.
-- Circumvent paywalls or download content you do not have a right to access.
-- Scrape content at scale or in ways that violate a site's Terms of Service.
+## The workflow
 
-Respect the copyright of lecturers, institutions, and other rights holders.
-Downloaded files are for your own, private, educational use. When in doubt,
-ask your instructor whether it's okay to keep a local copy.
+1. Open a page containing an authorized MP4 recording and start playback.
+2. StreamLoader detects eligible MP4 URLs from the network and the page's video elements.
+3. Open the side panel to review the streams found for that tab.
+4. Copy the URL, open it, or download it with a filename derived from the page title.
 
-The authors provide this tool as-is and take no responsibility for how it is
-used. See `LICENSE`.
+Detection and per-tab state remain in the browser. The extension does not use an account or backend service.
 
-## Features
+## What it does
 
-- Detects MP4 URLs from network traffic (`chrome.webRequest`) and from
-  `<video>` / `<source>` elements in the DOM (via a content script that also
-  watches for late-loaded players).
-- Chrome side panel UI with a per-tab list of streams, each showing a
-  filename, a video thumbnail (first-frame snapshot), and a resolution badge
-  (`1080p`, `720p`, raw `1920×1080`, etc.).
-- **Copy URL**, **Open**, and **Download** actions for each stream.
-- Downloads are auto-named from the active tab's page title, sanitized for
-  Windows-safe filenames (strips reserved characters, collapses whitespace,
-  caps length, avoids reserved device names).
-- Handles Referer-protected CDNs (such as Zoom's replay host) by installing a
-  per-click `declarativeNetRequest` session rule that rewrites the `Referer`
-  header to match the active tab's origin, and injects CORS response headers
-  so a page-context fallback can read the body.
-- Automatic fallback for downloads that still get `SERVER_FORBIDDEN`: runs
-  `fetch(url, { credentials: "include" })` inside the source tab via
-  `chrome.scripting.executeScript`, turns the response into a blob, and
-  triggers an `<a download>` click with the page-title filename.
-- Surfaces the exact `chrome.downloads.InterruptReason` in a toast when a
-  download fails, so you know whether it was a filename issue, a network
-  error, or a server rejection.
-- Thumbnails and resolutions are generated on-demand in the side panel by
-  loading the MP4 into a hidden `<video crossOrigin="anonymous">`, reading
-  `videoWidth` / `videoHeight` at `loadedmetadata`, then drawing the first
-  frame onto a canvas. A separate per-URL DNR session rule (id `2002`) injects
-  the matching `Referer` and CORS response headers so the canvas isn't
-  tainted. Generation is serialized (one decode at a time) to cap peak memory.
+- Detects direct `.mp4` resources from Chrome network events and `<video>` / `<source>` elements, including players added after page load.
+- Keeps a separate stream list for each browser tab, with a toolbar badge showing the detected count.
+- Offers **Copy URL**, **Open**, and **Download** actions.
+- Sanitizes page titles for Windows-safe filenames and avoids reserved device names.
+- Captures content type and file size when those response headers are available.
+- Can generate an on-demand first-frame thumbnail and resolution badge; both degrade gracefully when the source cannot be read cross-origin.
+- Handles some referer- and cookie-protected authorized sources by applying a short-lived, per-click request rule and retrying in the source tab when Chrome's download manager is rejected.
 
-## Install (unpacked)
+## Architecture
 
-1. Clone or download this repo.
-2. Open `chrome://extensions` in Chrome.
-3. Toggle **Developer mode** on (top right).
-4. Click **Load unpacked** and select the `streamloader` directory.
-5. The extension action (toolbar icon) opens a side panel when clicked.
-
-No icons are shipped, so Chrome uses its default puzzle-piece icon. Drop PNGs
-into an `icons/` directory and re-add the `icons` / `default_icon` keys to
-`manifest.json` if you want branding.
-
-## Usage
-
-1. Open the page that plays the video.
-2. Start playback so the MP4 URL shows up in network traffic (or is attached
-   to a `<video>` element).
-3. Click the StreamLoader toolbar icon — the side panel opens and shows the
-   detected streams for the active tab.
-4. Click **Download** on the stream you want. The file saves to your
-   Downloads folder with a name based on the page title.
-
-**Keep the source tab active when you click Download.** The extension reads
-the active tab's URL to set the `Referer` header for Referer-protected CDNs.
-If you switch to another tab first, the override uses the wrong origin.
-
-### Buttons
-
-- **Copy URL** — copies the raw stream URL to the clipboard.
-- **Open** — opens the URL in a new tab with the Referer override applied, so
-  Referer-protected URLs (e.g. Zoom replay) will actually load.
-- **Download** — saves to disk with the page-title filename. On
-  `SERVER_FORBIDDEN`, automatically retries via an in-tab `fetch` so cookies
-  and the real Referer come from the source page.
-
-## Known limitations
-
-- **Only plain `.mp4` URLs.** HLS (`.m3u8`) and DASH (`.mpd`) segmented
-  streams are not reassembled. For those, use a tool like `yt-dlp`.
-- **Page-context fallback buffers the whole file into tab memory.** For
-  multi-GB recordings this can be slow or crash the tab. If that happens,
-  there's no automatic recovery — use `yt-dlp` or a native downloader.
-- **Chrome's built-in video player Download button does not use this
-  extension.** When you open a direct MP4 URL in a tab, Chrome's own video
-  controls offer a Download icon that saves using a URL-derived filename; for
-  signed URLs that filename blows past Windows' `MAX_PATH` and fails. Always
-  download from the StreamLoader side panel instead.
-- **Referer rewrite is per-click.** The DNR session rule is updated each time
-  you click Download or Open; older in-flight requests to the same URL will
-  not be rewritten retroactively.
-- **Thumbnails and resolution badges may be missing** for streams whose CDN
-  refuses cross-origin reads even with the injected CORS headers, or which
-  require cookies that the side-panel context doesn't have. The row falls back
-  to a generic play-icon placeholder; the URL is still copyable and downloadable.
-
-## Project layout
-
-```
-streamloader/
-  manifest.json       MV3 manifest; side panel + DNR + downloads
-  background.js       Service worker: webRequest capture, DNR rules, messaging
-  content.js          DOM scanner for <video>/<source> elements
-  sidepanel.html      Side panel markup
-  sidepanel.css       Side panel styles (light + dark)
-  sidepanel.js        Side panel logic, download flow, fallback
-  README.md
-  LICENSE
+```text
+current browser tab
+  ├─ network events ───────┐
+  └─ DOM video scanner ────┤
+                           ↓
+                service-worker stream registry
+                           ↓
+                      side-panel UI
+                           ↓
+            copy / open / authorized download
 ```
 
-## Tech notes
+- `background.js` is the Manifest V3 service worker. It collects streams, manages per-tab state, and configures short-lived declarative network rules for an action.
+- `content.js` watches the document for video and source elements, complementing network-based detection.
+- `sidepanel.js` presents the detected stream list, filename handling, download flow, metadata probes, and optional thumbnail queue.
+- `sidepanel.html` and `sidepanel.css` define the local side-panel interface.
 
-- Manifest V3, service worker background (no persistent page).
-- Permissions: `webRequest`, `storage`, `tabs`, `activeTab`, `scripting`,
-  `downloads`, `webNavigation`, `sidePanel`,
-  `declarativeNetRequestWithHostAccess`. Host permissions: `<all_urls>`.
-- Stream capture uses `chrome.webRequest.onBeforeRequest` +
-  `onHeadersReceived` for network detection, and a mutation-observer-based
-  content script for DOM detection.
-- Referer override uses `chrome.declarativeNetRequest.updateSessionRules` with
-  a per-download rule (id `2001`) that rewrites the `Referer` request header
-  and injects `Access-Control-Allow-Origin` / `Access-Control-Allow-Credentials`
-  response headers so a cross-origin page-context fetch can read the body.
-  A separate session rule (id `2002`) is used for thumbnail generation so
-  Download/Open clicks don't clobber an in-flight thumbnail probe.
-- Download fallback runs a `chrome.scripting.executeScript` call targeting
-  the source tab, where the injected function does the `fetch` and triggers
-  a blob-URL download.
-- Thumbnails are 160×90 JPEGs (q=0.7), ~5–15 KB each, cached on the stream
-  entry in the service worker and in the side panel. Resolution is read from
-  `videoWidth`/`videoHeight` at `loadedmetadata` and rendered before the
-  thumbnail finishes painting.
+## Permissions, explained
 
-## Contributing
+StreamLoader needs broad browser permissions because it observes media requests and operates on the active source page.
 
-Bug reports and PRs welcome. Please keep the tool focused on its intended
-use case (personal study copies of authorized content). Feature requests for
-scraping, bulk downloading, or DRM circumvention will be closed.
+| Permission | Why it is used |
+| --- | --- |
+| `webRequest` | Detect eligible MP4 requests and read available response metadata |
+| `tabs`, `activeTab`, `webNavigation` | Keep results scoped to the active tab and clear them on navigation |
+| `sidePanel` | Present the stream list |
+| `downloads` | Start a user-requested download |
+| `scripting` | Retry an authorized download in the source-page context when needed |
+| `declarativeNetRequestWithHostAccess` and host access | Apply a short-lived referer/CORS rule for the selected source |
+| `storage` | Reserved by the current extension configuration |
+
+The extension only targets plain MP4 URLs. It does not reconstruct HLS (`.m3u8`) or DASH (`.mpd`) streams, and it does not decrypt or circumvent DRM.
+
+## Install locally
+
+This repository has no build step.
+
+1. Clone or download this repository.
+2. In Chrome, open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Select **Load unpacked** and choose this repository's root folder.
+5. Click the StreamLoader toolbar icon to open its side panel.
+
+## Use responsibly
+
+1. Navigate to media you are allowed to retain and start playback.
+2. Open StreamLoader from the Chrome toolbar.
+3. Review the list for the current tab; refresh or clear it as needed.
+4. Select **Download** to save a local copy, or **Copy URL** / **Open** for the selected stream.
+
+Keep the source tab active when choosing **Download**. The extension uses that tab's origin for the temporary referer override needed by some authorized CDNs.
+
+## Known limits
+
+- Only direct, non-segmented MP4 URLs are supported.
+- A signed URL, a source that requires an unavailable cookie, or a CDN that rejects cross-origin media can prevent metadata, thumbnail, or download operations.
+- The fallback path buffers the entire file in the source tab; very large files can be slow or exhaust tab memory.
+- Temporary request rules are configured per action. They are not a general-purpose download manager.
+- The tool is loaded unpacked and is not distributed through the Chrome Web Store.
+
+## Repository map
+
+```text
+manifest.json       Chrome Manifest V3 configuration
+background.js       Stream registry, request rules, and service-worker messaging
+content.js          DOM video/source discovery
+sidepanel.html      Side-panel markup
+sidepanel.css       Side-panel styling
+sidepanel.js        User actions, metadata, thumbnails, and download flow
+LICENSE             MIT license
+```
+
+## Screenshots
+
+The repository currently has no product screenshots. If you add screenshots, use only authorized media and remove account names, URLs, course titles, and other identifying data.
 
 ## License
 
-MIT — see `LICENSE`.
+[MIT](LICENSE)
